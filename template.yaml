@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  s3-events-demo
+
+  demo using S3 events to trigger Lambda via SNS/SQS, includes payload-based message filtering
+
+Globals:
+  Function:
+    Timeout: 3
+    MemorySize: 128
+
+Resources:
+  NewFileProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: new_file_processing/
+      Handler: app.lambda_handler
+      Runtime: python3.9
+      Architectures:
+        - x86_64
+      Role: arn:aws:iam::619726840331:role/jcartwright-noaa-csb
+      Events:
+        IncomingCsbEvent:
+          Type: SQS
+          Properties:
+              Queue: !GetAtt IncomingCsbEventsQueue.Arn
+              Enabled: true
+
+  IncomingDataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    DependsOn: IncomingCsbEventsTopicPolicy
+    Properties:
+      BucketName: s3-events-demo-data
+      NotificationConfiguration:
+        TopicConfigurations:
+          - Topic: !Ref IncomingCsbEventsTopic
+            Event: 's3:ObjectCreated:*'
+
+  IncomingCsbEventsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref IncomingCsbEventsTopic
+      PolicyDocument:
+        Id: TopicPolicy
+        Version: "2012-10-17"
+        Statement:
+          - Sid: Allow-S3-Publish
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+             - sns:Publish
+            Resource: "*"
+
+  IncomingCsbEventsQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref IncomingCsbEventsQueue
+      PolicyDocument:
+        Statement:
+          - Sid: Allow-SNS-SendMessage
+            Effect: Allow
+            Principal:
+              Service : "sns.amazonaws.com"
+            Action:
+              - SQS:SendMessage
+            Resource: "*"
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Ref IncomingCsbEventsTopic
+
+  IncomingCsbEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: incoming-csb-events-topic
+
+  IncomingCsbEventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: incoming-csb-file-queue
+
+  # connect the S3 SNS topic to queue
+  IncomingCsbEventsSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Protocol: sqs
+      Endpoint: !GetAtt IncomingCsbEventsQueue.Arn
+      TopicArn: !Ref IncomingCsbEventsTopic
+      FilterPolicyScope: MessageBody
+      FilterPolicy:
+        '{"Records":{"s3":{"object":{"key":[{"prefix":"csb/csv/"}]}},"eventName":[{"prefix":"ObjectCreated:"}]}}'
+
+
+Outputs:
+  NewFileProcessingFunction:
+    Description: "New File Processing Lambda Function ARN"
+    Value: !GetAtt NewFileProcessingFunction.Arn
